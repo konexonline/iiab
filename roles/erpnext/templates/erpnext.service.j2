@@ -1,0 +1,23 @@
+[Unit]
+Description=ERPNext
+Requires=mariadb.service redis-server.service
+After=mariadb.service redis-server.service
+
+[Service]
+User={{ frappe_user }}
+Group={{ frappe_user }}
+WorkingDirectory={{ bench_dir }}
+ExecStart={{ bench_dir }}/env/bin/gunicorn -b 0.0.0.0:8000 \
+          --workers 4 \
+          --threads 4 \
+          -t 120 \
+          frappe.app:application \
+          --preload
+Restart=always
+Environment=PYTHONPATH={{ bench_dir }}/apps/frappe
+Environment=FRAPPE_REDIS_CACHE=redis://localhost:6379
+Environment=FRAPPE_REDIS_QUEUE=redis://localhost:6379
+Environment=FRAPPE_SITE_HOST_NAME={{ erpnext_site_name }}
+
+[Install]
+WantedBy=multi-user.target

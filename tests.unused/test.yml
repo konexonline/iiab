@@ -30,6 +30,7 @@
     #- { role: ejabberd }
     #- { role: ejabberd_xs }
     #- { role: elgg }
+    - { role: erpnext }
     - { role: firmware }
     - { role: gitea }
     #- { role: homepage }

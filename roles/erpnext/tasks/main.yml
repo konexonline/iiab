@@ -1,0 +1,48 @@
+- name: Assert that "erpnext_install" is a boolean true
+  assert:
+    that: erpnext_install is sameas true
+    fail_msg: "PLEASE SET 'erpnext_install: True' e.g. IN: /etc/iiab/local_vars.yml"
+    quiet: yes
+
+- name: Assert that "erpnext_enabled" is a boolean
+  assert:
+    that: erpnext_enabled | type_debug == 'bool'
+    fail_msg: "PLEASE GIVE VARIABLE 'erpnext_enabled' A PROPER (unquoted) Ansible boolean value e.g. IN: /etc/iiab/local_vars.yml"
+    quiet: yes
+
+- name: Validate IIAB required paths
+  assert:
+    that:
+      - iiab_ini_file is defined
+      - iiab_state_file is defined
+      - nginx_conf_dir is defined
+    msg: "Missing required IIAB path variables (iiab_ini_file, iiab_state_file, nginx_conf_dir)"
+
+- block:
+    - name: Install ERPNext if not already installed (check via iiab_state_file)
+      include_tasks: install.yml
+      when: erpnext_installed is undefined
+
+    - include_tasks: enable-or-disable.yml
+
+    - name: Add ERPNext variable values to IIAB configuration
+      ini_file:
+        path: "{{ iiab_ini_file }}"    # /etc/iiab/iiab.ini
+        section: erpnext
+        option: "{{ item.option }}"
+        value: "{{ item.value | string }}"
+      loop:
+        - { option: name, value: ERPNext }
+        - { option: description, value: '"ERPNext is a free and open-source enterprise resource planning (ERP) software."' }
+        - { option: erpnext_install, value: "{{ erpnext_install }}" }
+        - { option: erpnext_enabled, value: "{{ erpnext_enabled }}" }
+        - { option: erpnext_url, value: "{{ erpnext_url }}" }
+        - { option: erpnext_path, value: "{{ erpnext_venv_path }}" }
+        - { option: erpnext_home, value: "{{ erpnext_home }}" }
+        - { option: erpnext_port, value: "{{ erpnext_port }}" }
+        - { option: erpnext_settings_database, value: "{{ erpnext_settings_database }}" }
+  rescue:
+    - name: 'SEE ERROR ABOVE (skip_role_on_error: {{ skip_role_on_error }})'
+      fail:
+        msg: ""
+      when: not skip_role_on_error

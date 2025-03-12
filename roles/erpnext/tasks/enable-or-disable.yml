@@ -1,0 +1,35 @@
+- name: Configure ERPNext service state
+  systemd:
+    name: erpnext
+    enabled: "{{ erpnext_enabled }}"
+    state: "{{ 'started' if erpnext_enabled else 'stopped' }}"
+    daemon_reload: yes
+  notify: restart erpnext
+
+- name: Manage Nginx configuration
+  block:
+    - name: Deploy ERPNext Nginx config
+      template:
+        src: erpnext-nginx.conf.j2
+        dest: "{{ nginx_conf_dir }}/sites-available/erpnext.conf"
+      notify: reload nginx
+
+    - name: Enable site configuration (create symlink)
+      file:
+        src: "{{ nginx_conf_dir }}/sites-available/erpnext.conf"
+        dest: "{{ nginx_conf_dir }}/sites-enabled/erpnext.conf"
+        state: link
+  when: erpnext_enabled
+
+- name: Remove ERPNext configuration
+  block:
+    - name: Disable site configuration
+      file:
+        path: "{{ nginx_conf_dir }}/sites-enabled/erpnext.conf"
+        state: absent
+
+    - name: Remove site configuration file
+      file:
+        path: "{{ nginx_conf_dir }}/sites-available/erpnext.conf"
+        state: absent
+  when: not erpnext_enabled

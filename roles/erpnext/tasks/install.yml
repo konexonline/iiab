@@ -1,0 +1,349 @@
+# Record initial disk space usage
+- name: Record (initial) disk space used
+  shell: df -B1 --output=used / | tail -1
+  register: df1
+  tags: [install]
+
+# Ensure Node.js is available via the IIAB nodejs role
+- name: Ensure Node.js is available
+  include_role:
+    name: nodejs
+  vars:
+    nodejs_install: "{{ erpnext_enabled }}"
+    nodejs_enabled: "{{ erpnext_enabled }}"
+  tags: [install]
+
+- name: Verify Node.js availability
+  assert:
+    that: nodejs_installed | bool
+    msg: "ERPNext requires Node.js installed by the nodejs role"
+  when: erpnext_enabled
+  tags: [install]
+
+# Ensure Yarn is available via the IIAB yarn role
+- name: Ensure Yarn is available
+  include_role:
+    name: yarn
+  vars:
+    yarn_install: "{{ erpnext_enabled }}"
+    yarn_enabled: "{{ erpnext_enabled }}"
+  tags: [install]
+
+# Generate persistent passwords and store them in the IIAB config
+- name: Generate persistent passwords
+  block:
+    - name: Load or generate passwords
+      set_fact:
+        mysql_root_password: "{{ lookup('ini', 'mysql_root_password section=erpnext file=' ~ iiab_ini_file) | default(lookup('password', '/dev/null length=20 chars=ascii_letters,digits,_'), True) }}"
+        erpnext_db_password: "{{ lookup('ini', 'erpnext_db_password section=erpnext file=' ~ iiab_ini_file) | default(lookup('password', '/dev/null length=20 chars=ascii_letters,digits,_'), True) }}"
+        erpnext_admin_password: "{{ lookup('ini', 'erpnext_admin_password section=erpnext file=' ~ iiab_ini_file) | default(lookup('password', '/dev/null length=20 chars=ascii_letters,digits,_'), True) }}"
+      no_log: true
+
+    - name: Store generated passwords in IIAB config
+      ini_file:
+        path: "{{ iiab_ini_file }}"
+        section: erpnext
+        option: "{{ item.option }}"
+        value: "{{ item.value }}"
+      loop:
+        - { option: 'mysql_root_password', value: "{{ mysql_root_password }}" }
+        - { option: 'erpnext_db_password', value: "{{ erpnext_db_password }}" }
+        - { option: 'erpnext_admin_password', value: "{{ erpnext_admin_password }}" }
+      no_log: true
+  when: erpnext_enabled
+  tags: [install, secrets]
+
+# Install system dependencies (including redis, supervisor, and wkhtmltox prerequisites)
+- name: Install system dependencies
+  apt:
+    name:
+      - python3-dev
+      - python3-setuptools
+      - python3-pip
+      - python3-venv
+      - software-properties-common
+      - build-essential
+      - git
+      - mariadb-server
+      - mariadb-client
+      - libmysqlclient-dev
+      - libffi-dev
+      - libssl-dev
+      - curl
+      - redis-server
+      - supervisor
+      - fontconfig
+      - libxrender1
+      - xfonts-75dpi
+      - xfonts-base
+    state: present
+  tags: [install]
+
+# Install wkhtmltox for printing support
+- name: Determine architecture for wkhtmltox
+  set_fact:
+    wkhtmltox_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else ('arm64' if ansible_architecture == 'aarch64' else 'unsupported') }}"
+  tags: [install]
+
+- name: Fail if architecture unsupported for wkhtmltox
+  fail:
+    msg: "Unsupported architecture for wkhtmltox: {{ ansible_architecture }}"
+  when: wkhtmltox_arch == "unsupported"
+  tags: [install]
+
+- name: Determine wkhtmltox download URL for Ubuntu
+  set_fact:
+    wkhtmltox_url: "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.{{ (ansible_distribution_release == 'noble') | ternary('noble','jammy') }}_{{ wkhtmltox_arch }}.deb"
+  when: ansible_distribution == 'Ubuntu'
+  tags: [install]
+
+# Ensure redis-server and supervisor services are enabled
+- name: Ensure redis-server is enabled
+  service:
+    name: redis-server
+    enabled: yes
+    state: started
+  tags: [services]
+
+- name: Ensure supervisor is enabled
+  service:
+    name: supervisor
+    enabled: yes
+    state: started
+  tags: [services]
+
+# ERPNext app installation idempotence:
+- name: Check if the ERPNext site already exists
+  stat:
+    path: "{{ bench_dir }}/sites/{{ erpnext_site_name }}/site_config.json"
+  register: site_config
+  tags: [erpnext]
+
+- name: Create new ERPNext site if not present
+  become_user: "{{ frappe_user }}"
+  command: >
+    bench new-site {{ erpnext_site_name }}
+    --mariadb-root-password {{ mysql_root_password }}
+    --admin-password {{ erpnext_admin_password }}
+  args:
+    chdir: "{{ bench_dir }}"
+  when: not site_config.stat.exists
+  register: site_creation
+  tags: [erpnext, secrets]
+
+- name: Install ERPNext on the site
+  become_user: "{{ frappe_user }}"
+  command: bench --site {{ erpnext_site_name }} install-app erpnext
+  args:
+    chdir: "{{ bench_dir }}"
+  tags: [erpnext]
+
+# Configure production settings
+- name: Setup production configuration
+  become_user: "{{ frappe_user }}"
+  command: bench setup production {{ frappe_user }} --yes
+  args:
+    chdir: "{{ bench_dir }}"
+  tags: [production]
+
+# For ERPNext v15, set up socketio, supervisor, and redis
+- name: Setup socketio, supervisor, and redis (ERPNext v15)
+  become_user: "{{ frappe_user }}"
+  shell: |
+    bench setup socketio &&
+    yes | bench setup supervisor &&
+    bench setup redis
+  args:
+    chdir: "{{ bench_dir }}"
+  when: erpnext_version == "version-15"
+  tags: [production]
+
+- name: Reload Supervisor
+  command: supervisorctl reload
+  become: yes
+  when: erpnext_version == "version-15"
+  tags: [production]
+
+# Enable and resume scheduler and disable maintenance mode
+- name: Enable and resume scheduler
+  become_user: "{{ frappe_user }}"
+  command: "bench --site {{ erpnext_site_name }} {{ item }}"
+  with_items:
+    - "scheduler enable"
+    - "scheduler resume"
+    - "set-maintenance-mode off"
+  args:
+    chdir: "{{ bench_dir }}"
+  tags: [production]
+
+# Configure process manager via Supervisor
+- name: Configure process manager
+  block:
+    - name: Reread supervisor config
+      command: supervisorctl reread
+    - name: Update process groups
+      command: supervisorctl update
+    - name: Restart affected services
+      command: supervisorctl restart all
+  become: yes
+  tags: [production]
+
+# Download and install wkhtmltox
+- name: Download wkhtmltox deb package
+  get_url:
+    url: "{{ wkhtmltox_url }}"
+    dest: "/tmp/wkhtmltox.deb"
+  tags: [install]
+
+- name: Install wkhtmltox deb package
+  apt:
+    deb: "/tmp/wkhtmltox.deb"
+  tags: [install]
+
+- name: Remove wkhtmltox deb package
+  file:
+    path: "/tmp/wkhtmltox.deb"
+    state: absent
+  tags: [install]
+
+# Start MariaDB and wait for it to be ready
+- name: Start MariaDB
+  service:
+    name: mariadb
+    state: started
+    enabled: yes
+  tags: [database]
+
+- name: Wait for MariaDB to be ready
+  wait_for:
+    host: "127.0.0.1"
+    port: 3306
+    state: started
+    timeout: 30
+  tags: [database]
+
+# Configure MariaDB: set root password, create database and user
+- name: Set MariaDB root password
+  mysql_user:
+    name: root
+    host: localhost
+    password: "{{ mysql_root_password }}"
+    login_unix_socket: /run/mysqld/mysqld.sock
+    check_implicit_admin: yes
+    state: present
+  tags: [database, secrets]
+
+- name: Create application database
+  mysql_db:
+    name: "{{ erpnext_db_name }}"
+    state: present
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+  tags: [database]
+
+- name: Create database user
+  mysql_user:
+    name: "{{ erpnext_db_user }}"
+    password: "{{ erpnext_db_password }}"
+    priv: "{{ erpnext_db_name }}.*:ALL"
+    state: present
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+  tags: [database, secrets]
+
+# Create frappe user and prepare bench directory
+- name: Create frappe user
+  user:
+    name: "{{ frappe_user }}"
+    group: "{{ frappe_user }}"
+    home: "/home/{{ frappe_user }}"
+    shell: /bin/bash
+    create_home: yes
+  tags: [system]
+
+- name: Ensure bench directory exists with proper permissions
+  file:
+    path: "{{ bench_dir }}"
+    state: directory
+    owner: "{{ frappe_user }}"
+    group: "{{ frappe_user }}"
+    mode: '0755'
+  tags: [frappe]
+
+# Install bench using pip
+- name: Install bench using pip
+  pip:
+    name: frappe-bench
+  tags: [install]
+
+# Initialize bench repository if not already initialized
+- name: Initialize bench repository if not already initialized
+  become_user: "{{ frappe_user }}"
+  command: bench init {{ bench_dir }} --python python3 --frappe-branch {{ erpnext_version }} --ignore-exist
+  args:
+    creates: "{{ bench_dir }}/env"
+  tags: [frappe]
+
+- name: Set proper permissions on bench directory
+  file:
+    path: "{{ bench_dir }}"
+    owner: "{{ frappe_user }}"
+    group: "{{ frappe_user }}"
+    mode: '0755'
+    recurse: yes
+  tags: [system]
+
+# Get ERPNext application and optional apps
+- name: Get ERPNext application
+  become_user: "{{ frappe_user }}"
+  command: bench get-app erpnext https://github.com/frappe/erpnext --branch {{ erpnext_version }}
+  args:
+    chdir: "{{ bench_dir }}"
+    creates: "{{ bench_dir }}/apps/erpnext"
+  register: erpnext_clone
+  tags: [erpnext]
+
+- name: Get Payments application
+  become_user: "{{ frappe_user }}"
+  command: bench get-app payments https://github.com/frappe/payments --branch {{ erpnext_version }}
+  args:
+    chdir: "{{ bench_dir }}"
+    creates: "{{ bench_dir }}/apps/payments"
+  register: payments_clone
+  tags: [erpnext]
+
+- name: Get HRMS application
+  become_user: "{{ frappe_user }}"
+  command: bench get-app hrms https://github.com/frappe/hrms --branch {{ erpnext_version }}
+  args:
+    chdir: "{{ bench_dir }}"
+    creates: "{{ bench_dir }}/apps/hrms"
+  register: hrms_clone
+  tags: [erpnext]
+
+# Record final disk usage and update IIAB configuration
+- name: Record (final) disk space used
+  shell: df -B1 --output=used / | tail -1
+  register: df2
+  tags: [install]
+
+- name: Add 'erpnext_disk_usage = {{ df2.stdout|int - df1.stdout|int }}' to {{ iiab_ini_file }}
+  ini_file:
+    path: "{{ iiab_ini_file }}"
+    section: erpnext
+    option: erpnext_disk_usage
+    value: "{{ df2.stdout|int - df1.stdout|int }}"
+  tags: [install]
+
+- name: Set 'erpnext_installed: True'
+  set_fact:
+    erpnext_installed: True
+  tags: [install]
+
+- name: Add 'erpnext_installed: True' to {{ iiab_state_file }}
+  lineinfile:
+    path: "{{ iiab_state_file }}"
+    regexp: '^erpnext_installed:'
+    line: 'erpnext_installed: True'
+    state: present
+  tags: [install]

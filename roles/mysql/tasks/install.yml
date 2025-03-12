@@ -19,6 +19,21 @@
     virtualenv: /usr/local/ansible
     extra_args: "--upgrade --no-cache-dir --prefer-binary"    # 2023-10-01: Lifesaver when recent wheels (e.g. piwheels.org) are inevitably not yet built!  SEE #3560
 
+# --- NEW TASK for UTF8MB4 configuration ---
+- name: Configure MariaDB to use UTF8MB4
+  blockinfile:
+    path: /etc/mysql/conf.d/utf8mb4.cnf
+    create: yes
+    marker: "# {mark} ANSIBLE MANAGED UTF8MB4 SETTINGS"
+    block: |
+      [mysqld]
+      character-set-server = utf8mb4
+      collation-server = utf8mb4_unicode_ci
+
+      [mysql]
+      default-character-set = utf8mb4
+  notify: restart mariadb
+
 # 2020-07-11: 10 PHP package installs moved to roles/www_base/tasks/main.yml
 # php{{ php_version }}-sqlite3 install moved to roles/osm-vector-maps/tasks/install.yml
 

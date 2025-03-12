@@ -398,6 +398,11 @@ azuracast_port_range_prefix: 10
 # elgg_mysql_password: $6$iiab51$jeTwnATcbaa92xo0QBTgjLBU.5aVDDrbKeNyyC99R/TAWz6pvfzj.L7lfnOVVjD78nxqT.gkNn6XZmuRV0W3o1
 elgg_mysql_password: elgg4kids
 
+# ERPNext - from https://erpnext.com
+erpnext_install: False
+erpnext_enabled: False
+erpnext_port: 8000
+
 # Gitea (lightweight self-hosted "GitHub") from https://gitea.io
 gitea_install: False
 gitea_enabled: False

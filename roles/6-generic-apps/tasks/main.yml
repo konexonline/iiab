@@ -21,6 +21,11 @@
     name: elgg
   when: elgg_install is defined and elgg_install
 
+- name: ERPNEXT
+  include_role:
+    name: erpnext
+  when: erpnext_install
+
 - name: GITEA
   include_role:
     name: gitea
