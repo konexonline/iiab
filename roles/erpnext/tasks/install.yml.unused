@@ -1,0 +1,189 @@
+- name: Install system dependencies
+  become: yes
+  apt:
+    name:
+      - python3-dev
+      - python3-pip
+      - python3-venv
+      - python3-setuptools
+      - libffi-dev
+      - libssl-dev
+      - libxslt1-dev
+      - libldap2-dev
+      - libsasl2-dev
+      - redis-server
+      - xvfb
+      - libfontconfig
+      - wkhtmltopdf
+    state: present
+
+- name: Setup frappe user
+  become: yes
+  user:
+    name: "{{ frappe_user }}"
+    home: "/home/{{ frappe_user }}"
+    shell: /bin/bash
+    create_home: yes
+    groups: www-data
+
+- name: Create virtual environment
+  become_user: "{{ frappe_user }}"
+  command: python3 -m venv ~/frappe-env
+  args:
+    creates: "/home/{{ frappe_user }}/frappe-env/bin/activate"
+
+- name: Install bench in virtualenv
+  become_user: "{{ frappe_user }}"
+  pip:
+    virtualenv: "/home/{{ frappe_user }}/frappe-env"
+    name: frappe-bench
+
+- name: Initialize bench
+  become_user: "{{ frappe_user }}"
+  command: "~/frappe-env/bin/bench init {{ bench_dir }} --python ~/frappe-env/bin/python"
+  args:
+    creates: "{{ bench_dir }}/Procfile"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+
+- name: Install specific pycountry version for ERPNext
+  become_user: "{{ frappe_user }}"
+  pip:
+    virtualenv: "/home/{{ frappe_user }}/frappe-env"
+    name: pycountry
+    version: "22.3.5"
+
+- name: Ensure Redis server is running and enabled
+  become: yes
+  service:
+    name: redis-server
+    state: started
+    enabled: yes
+
+- name: Add port 11000 to Redis configuration
+  become: yes
+  lineinfile:
+    path: /etc/redis/redis.conf
+    line: port 11000
+    insertafter: '^port 6379$'
+    state: present
+  notify: Restart Redis
+
+- name: Install Node.js
+  include_role:
+    name: nodejs
+  vars:
+    nodejs_install: true
+    nodejs_enabled: true
+
+- name: Install Yarn
+  include_role:
+    name: yarn
+  vars:
+    yarn_install: true
+    yarn_enabled: true
+
+- name: Create site
+  become_user: "{{ frappe_user }}"
+  command: "~/frappe-env/bin/bench new-site {{ erpnext_site_name }} --mariadb-root-username root --mariadb-root-password {{ mysql_root_password }} --admin-password {{ erpnext_admin_password }}"
+  args:
+    chdir: "{{ bench_dir }}"
+    creates: "{{ bench_dir }}/sites/{{ erpnext_site_name }}/site_config.json"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+
+- name: Remove existing ERPNext and additional app directories (if they exist)
+  become_user: "{{ frappe_user }}"
+  command: "rm -rf {{ bench_dir }}/apps/{{ item.name }}"
+  loop: "{{ apps_to_install }}"
+  args:
+    chdir: "{{ bench_dir }}"
+  # ignore_errors: yes
+
+- name: Install ERPNext and additional apps
+  become_user: "{{ frappe_user }}"
+  command: >
+    ~/frappe-env/bin/bench get-app {{ item.name }}
+    {% if item.repo is defined %}{{ item.repo }}{% endif %}
+  loop: "{{ apps_to_install }}"
+  args:
+    chdir: "{{ bench_dir }}"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+
+- name: Install apps on site
+  become_user: "{{ frappe_user }}"
+  command: "~/frappe-env/bin/bench --site {{ erpnext_site_name }} install-app {{ item.name }}"
+  loop: "{{ apps_to_install }}"
+  args:
+    chdir: "{{ bench_dir }}"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+  # ignore_errors: yes
+  # no_log: yes
+
+- name: Remove port 11000 from Redis configuration
+  become: yes
+  lineinfile:
+    path: /etc/redis/redis.conf
+    line: port 11000
+    state: absent
+  notify: Restart Redis
+
+- name: Configure ERPNext site settings
+  become_user: "{{ frappe_user }}"
+  template:
+    src: site_config.json.j2
+    dest: "{{ bench_dir }}/sites/{{ erpnext_site_name }}/site_config.json"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+
+- name: Enable scheduler
+  become_user: "{{ frappe_user }}"
+  command: "/home/{{ frappe_user }}/frappe-env/bin/bench --site {{ erpnext_site_name }} enable-scheduler"
+  args:
+    chdir: "{{ bench_dir }}"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+  # ignore_errors: yes
+
+- name: Disable maintenance mode
+  become_user: "{{ frappe_user }}"
+  command: "/home/{{ frappe_user }}/frappe-env/bin/bench --site {{ erpnext_site_name }} set-maintenance-mode off"
+  args:
+    chdir: "{{ bench_dir }}"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+
+- name: Start bench in development mode
+  become_user: "{{ frappe_user }}"
+  shell: "nohup /home/{{ frappe_user }}/frappe-env/bin/bench start > /dev/null 2>&1 &"
+  args:
+    chdir: "{{ bench_dir }}"
+  environment:
+    PATH: "/home/{{ frappe_user }}/frappe-env/bin:{{ ansible_env.PATH }}"
+
+- name: Fix bench directory permissions
+  become: yes
+  file:
+    path: "{{ bench_dir }}"
+    mode: "o+rx"
+    recurse: yes
+
+- name: Deploy Nginx configuration
+  become: yes
+  template:
+    src: erpnext-nginx.conf.j2
+    dest: "{{ nginx_conf_dir }}/erpnext-nginx.conf"
+  notify: Reload Nginx
+  # ignore_errors: yes
+
+- name: Verify ERPNext is running
+  uri:
+    url: "http://127.0.0.1:8000"
+    status_code: 200
+  register: _result
+  retries: 5
+  delay: 10
+  until: _result.status == 200
+  # ignore_errors: yes

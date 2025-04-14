@@ -1,0 +1,45 @@
+# IIAB Integration
+iiab_hostname: "{{ iiab_hostname | default('box') }}"
+iiab_domain: "{{ iiab_domain | default('lan') }}"
+iiab_admin_user: "{{ iiab_admin_user | default('iiab-admin') }}"
+iiab_erpnext_subdir: "/erpnext"
+iiab_ini_file: "/etc/iiab/iiab.ini"
+
+# ERPNext Core
+erpnext_version: "version-15"
+erpnext_site_name: "{{ iiab_hostname }}.{{ iiab_domain }}"
+erpnext_url: "{{ iiab_erpnext_subdir }}"
+frappe_user: "{{ iiab_admin_user }}"
+bench_dir: "/home/{{ frappe_user }}/frappe-bench"
+
+# Database Configuration
+erpnext_db_name: "{{ iiab_db_prefix | default('') }}erpnext"
+erpnext_db_user: "{{ iiab_db_prefix | default('') }}erpnext_user"
+erpnext_db_password: "{{ lookup('ini', 'erpnext_db_password section=erpnext file=' + iiab_ini_file) | default(lookup('password', '/dev/null length=20')) }}"
+erpnext_admin_password: "{{ lookup('ini', 'erpnext_admin_password section=erpnext file=' + iiab_ini_file) | default(lookup('password', '/dev/null length=20')) }}"
+
+# Service Control
+erpnext_install: true
+erpnext_enabled: true
+
+# Dependencies
+system_dependencies:
+  - redis-server
+  - wkhtmltopdf
+  - libmysqlclient-dev
+  - jq
+nodejs_version: "18"
+
+# Application Setup
+apps_to_install:
+  - { name: "erpnext", repo: "https://github.com/frappe/erpnext" }
+  # - { name: "payments" }
+  # - { name: "hrms", repo: "https://github.com/frappe/hrms" }  
+
+# Security
+erpnext_csp: "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:;"
+
+# Installer Configuration
+erpnext_use_installer_script: true
+erpnext_installer_noninteractive: true
+erpnext_installer_production_install: "no"

@@ -1,0 +1,34 @@
+- name: Template installer script
+  template:
+    src: erpnext_installer.sh.j2
+    dest: /tmp/erpnext_installer.sh
+    mode: 0755
+  become: yes
+
+- name: Execute installer script
+  shell: "/tmp/erpnext_installer.sh"
+  args:
+    executable: /bin/bash
+  environment:
+    NONINTERACTIVE: "{{ erpnext_installer_noninteractive | lower | string }}"
+    ERPNEXT_VERSION: "{{ erpnext_version }}"
+    SITE_NAME: "{{ erpnext_site_name }}"
+    ADMIN_PASSWORD: "{{ erpnext_admin_password }}"
+    SQL_ROOT_PASSWORD: "{{ lookup('ini', 'mysql_root_password section=erpnext file=' + iiab_ini_file) }}"
+    PRODUCTION_INSTALL: "{{ erpnext_installer_production_install | lower | string }}"
+    APPS_JSON: "{{ apps_to_install | to_json }}"
+  register: installer
+  changed_when: false
+
+- name: Show installation logs
+  debug:
+    msg: |
+      INSTALLER OUTPUT:
+      STDOUT: {{ installer.stdout }}
+      STDERR: {{ installer.stderr }}
+  when: installer.rc != 0
+
+- name: Fail on installation error
+  fail:
+    msg: "ERPNext installation failed"
+  when: installer.rc != 0

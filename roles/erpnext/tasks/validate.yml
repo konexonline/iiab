@@ -1,0 +1,12 @@
+- name: Verify port configuration
+  command: "{{ bench_dir }}/env/bin/bench config"
+  register: bench_config
+  changed_when: false
+
+- name: Extract nginx port
+  set_fact:
+    erpnext_port: "{{ bench_config.stdout | regex_search('nginx_port: (\\d+)', '\\1') | first }}"
+
+- name: Validate Nginx config
+  command: nginx -t
+  notify: Reload Nginx

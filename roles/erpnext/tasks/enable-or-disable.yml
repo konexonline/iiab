@@ -1,35 +1,19 @@
-- name: Configure ERPNext service state
+- name: Derive service base name
+  set_fact:
+    service_base: "{{ bench_dir.split('/')[-1] }}"
+
+- name: Enable production services
   systemd:
-    name: erpnext
+    name: "{{ service_base }}-{{ item }}.service"
     enabled: "{{ erpnext_enabled }}"
-    state: "{{ 'started' if erpnext_enabled else 'stopped' }}"
-    daemon_reload: yes
-  notify: restart erpnext
+    state: started
+  loop:
+    - web
+    - socketio
+    - worker
+  when: erpnext_installer_production_install == "yes"
 
-- name: Manage Nginx configuration
-  block:
-    - name: Deploy ERPNext Nginx config
-      template:
-        src: erpnext-nginx.conf.j2
-        dest: "{{ nginx_conf_dir }}/sites-available/erpnext.conf"
-      notify: reload nginx
-
-    - name: Enable site configuration (create symlink)
-      file:
-        src: "{{ nginx_conf_dir }}/sites-available/erpnext.conf"
-        dest: "{{ nginx_conf_dir }}/sites-enabled/erpnext.conf"
-        state: link
-  when: erpnext_enabled
-
-- name: Remove ERPNext configuration
-  block:
-    - name: Disable site configuration
-      file:
-        path: "{{ nginx_conf_dir }}/sites-enabled/erpnext.conf"
-        state: absent
-
-    - name: Remove site configuration file
-      file:
-        path: "{{ nginx_conf_dir }}/sites-available/erpnext.conf"
-        state: absent
-  when: not erpnext_enabled
+- name: Handle development mode
+  debug:
+    msg: "Running in development mode - use bench commands for process management"
+  when: erpnext_installer_production_install != "yes"

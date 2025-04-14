@@ -1,48 +1,92 @@
-- name: Assert that "erpnext_install" is a boolean true
-  assert:
-    that: erpnext_install is sameas true
-    fail_msg: "PLEASE SET 'erpnext_install: True' e.g. IN: /etc/iiab/local_vars.yml"
-    quiet: yes
+- name: Configure passwordless sudo for frappe_user
+  lineinfile:
+    path: /etc/sudoers
+    line: "{{ frappe_user }} ALL=(ALL) NOPASSWD:ALL"
+    validate: visudo -cf %s
+  become: yes
 
-- name: Assert that "erpnext_enabled" is a boolean
-  assert:
-    that: erpnext_enabled | type_debug == 'bool'
-    fail_msg: "PLEASE GIVE VARIABLE 'erpnext_enabled' A PROPER (unquoted) Ansible boolean value e.g. IN: /etc/iiab/local_vars.yml"
-    quiet: yes
+- name: Update and upgrade system packages
+  become: yes
+  apt:
+    update_cache: yes
+    upgrade: dist
+    cache_valid_time: 3600
 
-- name: Validate IIAB required paths
-  assert:
-    that:
-      - iiab_ini_file is defined
-      - iiab_state_file is defined
-      - nginx_conf_dir is defined
-    msg: "Missing required IIAB path variables (iiab_ini_file, iiab_state_file, nginx_conf_dir)"
+- name: Ensure ERPNext user exists
+  become: yes
+  user:
+    name: "{{ frappe_user }}"
+    create_home: yes
+    shell: /bin/bash
+    group: www-data
 
-- block:
-    - name: Install ERPNext if not already installed (check via iiab_state_file)
-      include_tasks: install.yml
-      when: erpnext_installed is undefined
+- name: Install core dependencies
+  include_role:
+    name: "{{ item }}"
+  loop:
+    - mysql
+    - nodejs
+    - yarn
+  vars:
+    mysql_install: true
+    nodejs_install: true
+    yarn_install: true
 
-    - include_tasks: enable-or-disable.yml
+- name: Install system dependencies
+  become: yes
+  apt:
+    name: "{{ system_dependencies }}"
+    state: present
 
-    - name: Add ERPNext variable values to IIAB configuration
-      ini_file:
-        path: "{{ iiab_ini_file }}"    # /etc/iiab/iiab.ini
-        section: erpnext
-        option: "{{ item.option }}"
-        value: "{{ item.value | string }}"
-      loop:
-        - { option: name, value: ERPNext }
-        - { option: description, value: '"ERPNext is a free and open-source enterprise resource planning (ERP) software."' }
-        - { option: erpnext_install, value: "{{ erpnext_install }}" }
-        - { option: erpnext_enabled, value: "{{ erpnext_enabled }}" }
-        - { option: erpnext_url, value: "{{ erpnext_url }}" }
-        - { option: erpnext_path, value: "{{ erpnext_venv_path }}" }
-        - { option: erpnext_home, value: "{{ erpnext_home }}" }
-        - { option: erpnext_port, value: "{{ erpnext_port }}" }
-        - { option: erpnext_settings_database, value: "{{ erpnext_settings_database }}" }
-  rescue:
-    - name: 'SEE ERROR ABOVE (skip_role_on_error: {{ skip_role_on_error }})'
-      fail:
-        msg: ""
-      when: not skip_role_on_error
+- name: Validate prerequisites
+  block:
+    - name: Verify IIAB MySQL installation
+      assert:
+        that: mysql_installed | default(false) | bool
+        msg: "Requires IIAB MySQL role installed first"
+    - name: Validate boolean parameters
+      assert:
+        that:
+          - erpnext_install | type_debug == 'bool'
+          - erpnext_enabled | type_debug == 'bool'
+        success_msg: "Valid parameters detected"
+        fail_msg: "Invalid boolean values in parameters"
+
+- name: Configure MariaDB
+  become: yes
+  template:
+    src: mariadb.cnf.j2
+    dest: /etc/mysql/conf.d/mariadb_erpnext.cnf
+  notify: Restart MariaDB
+
+- name: Set bench directory ownership
+  file:
+    path: "{{ bench_dir }}"
+    owner: "{{ frappe_user }}"
+    group: "{{ frappe_user }}"
+    recurse: yes
+  become: yes
+
+- name: Run ERPNext installer
+  include_tasks: installer.yml
+  when: erpnext_use_installer_script
+
+- name: Configure services
+  include_tasks: enable-or-disable.yml
+
+- name: Validate installation
+  include_tasks: validate.yml
+
+- name: Update IIAB registry and Persist credentials
+  ini_file:
+    path: "{{ iiab_ini_file }}"
+    section: erpnext
+    option: "{{ item.key }}"
+    value: "{{ item.value }}"
+  loop:
+    - { key: 'ernext_install', value: 'true' }
+    - { key: 'erpnext_enabled', value: 'true' }
+    - { key: 'erpnext_version', value: '{{ erpnext_version }}' }
+    - { key: 'db_password', value: '{{ erpnext_db_password }}' }
+    - { key: 'admin_password', value: '{{ erpnext_admin_password }}' }
+  no_log: true

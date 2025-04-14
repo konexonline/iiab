@@ -1,0 +1,8 @@
+{
+  "db_name": "{{ erpnext_db_name }}",
+  "db_password": "{{ erpnext_db_password }}",
+  "host_name": "http://{{ iiab_hostname }}.{{ iiab_domain }}{{ iiab_erpnext_subdir }}",
+  "root_url": "http://{{ iiab_hostname }}.{{ iiab_domain }}{{ iiab_erpnext_subdir }}",
+  "app_base": "{{ iiab_erpnext_subdir }}",
+  "admin_password": "{{ erpnext_admin_password }}"
+}

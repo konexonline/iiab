@@ -1,0 +1,17 @@
+[Unit]
+Description=ERPNext Service for {{ erpnext_site_name }}
+After=network.target mariadb.service redis-server.service
+
+[Service]
+User={{ frappe_user }}
+Group={{ frappe_user }}
+WorkingDirectory={{ bench_dir }}
+Environment=FRAPPE_SITE={{ erpnext_site_name }}
+Environment=FRAPPE_REDIS_CACHE=redis://localhost:6379/1
+Environment=FRAPPE_REDIS_QUEUE=redis://localhost:6379/2
+ExecStart={{ bench_exe }} start --no-dev
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
