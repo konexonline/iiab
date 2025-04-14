@@ -29,8 +29,11 @@
     - yarn
   vars:
     mysql_install: true
+    mysql_enabled: true
     nodejs_install: true
+    nodejs_enabled: true
     yarn_install: true
+    yarn_enabled: true
 
 - name: Install system dependencies
   become: yes
